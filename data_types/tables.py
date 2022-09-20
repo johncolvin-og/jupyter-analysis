@@ -1,123 +1,10 @@
 import pandas as pd
 import numpy as np
+from pandas.core.groupby.generic import DataFrameGroupBy
+from .data_frame_sanitation import ensure_column_type, cast_column_types, default_type_term_dict
+from .data_frame_group_cache import DataFrameGroupCache
+from .known_columns import bbo_avg_cols, bbo_cols, bbo_var_cols, bbo_var_inter_period_delta, book_cols
 from pandas.io.stata import ValueLabelTypeMismatch
-    
-def is_column_type(data_frame, col_name, type_name):
-    type_name = type_name.lower()
-    if type_name == 'timestamp':
-        # this is a bit of a hack, but an effective way to verify if the column
-        # is a timestamp/datetime nonethless.
-        return len(data_frame[[col_name]].select_dtypes(include=[np.datetime64]).columns) == 1
-    elif type_name == 'float':
-        return data_frame[col_name].dtype == np.float
-
-def ensure_column_type(data_frame, col_name, type_name):
-    # converting types can be time-consuming, so verify that the column
-    # is not already of the appropriate type before executing the cast.
-    if is_column_type(data_frame, col_name, type_name):
-        return
-    type_name = type_name.lower()
-    if type_name == 'timestamp':
-        # this is a bit of a hack, but an effective way to verify if the column
-        # is a timestamp/datetime nonethless.
-        data_frame[col_name] = data_frame[col_name].apply(lambda t: pd.Timestamp(t, unit='ns'))
-    elif type_name == 'float':
-        data_frame[col_name] = data_frame[col_name].astype(float)
-    elif isinstance(type_name, str) and len(type_name) > 0:
-        data_frame[col_name] = data_frame[col_name].astype(type_name)
-    else:
-        raise ValueError(f"Inappropriate type name '{type_name}' for column '{col_name}' (expected string).")
-
-def default_type_term_dict(table_name = None):
-    """The default type_term_dict used by 'cast_column_types.'"""
-    if table_name == None or table_name == '':
-        return {
-            'float': ['price', 'bid_p_', 'ask_p_', 'profit', '_std_', 'deviation', '_var_', 'variance', '_avg_', '_med_', '_quantile_', '_quant_'],
-            'category': ['symbol', 'side', 'asset', 'match_algo', 'sid', 'status'],
-            'int64': ['bid_q_', 'bid_no_', 'ask_q_', 'ask_no_']
-        }
-    if table_name == 'event_items':
-        return {
-            'symbol': 'category',
-            'side': 'category',
-            'status': 'category',
-            'type': 'category',
-            'change': 'category',
-            'agg': 'category',
-            't_time': 'timestamp'
-        }
-    if table_name == 'securities':
-        return {
-            'symbol': 'category',
-            'sec_type': 'category',
-            'cme_sec_type': 'category',
-            'sec_group': 'category',
-            'asset': 'category',
-            'match_algo': 'category'
-        }
-    if table_name == 'book_stat':
-        rv = {
-            'price': 'float',
-            'avg_price': 'float',
-            'variance': 'float',
-            'side': 'category'
-        }
-        for i in range(0, 10):
-            for prop in ['price', 'avg_price', 'variance']:
-                rv[f'{prop}_{i}'] = 'float'
-        return rv
-    if table_name == 'log':
-        return {
-            'src': 'category',
-            'entry_type': 'category',
-            't_time': 'timestamp',
-            'ev_t_time': 'timestamp',
-            'ev_o_time': 'timestamp'
-        }
-    return {}
-
-def cast_column_types(tables, type_term_dict = default_type_term_dict(), require_exact_match = False):
-    """Convert one or more DataFrame's column types to something more approrpiate.
-    The default type_term_dict accounts for most column-type misnomers in DataFrames read directly from a sql db,
-    as numeric columns are frequently considered objects, also converts t_time from int64 to pd.Timestamp.
-    For each column, the key in type_term_dict that is contained in the column name
-    determines the type to which the column is cast."""
-    if isinstance(tables, type(dict)):
-        for kv in tables.items():
-            cast_column_types(kv[1], kv[0])
-        return
-    table = tables
-    if not isinstance(table, pd.DataFrame):
-        raise ValueLabelTypeMismatch("'tables' should be a dict(name, DataFrame), or a DataFrame.")
-
-    def is_match(key, col_name):
-        return key == col_name or ((not require_exact_match) and key in col_name)
-
-    for col in table.columns:
-        for kv in type_term_dict.items():
-            if is_match(kv[0], col):
-                ensure_column_type(table, col, kv[1])
-                break
-            
-class DataFrameGroupCache:
-    _groups = None
-    _cached_groups = None
-    
-    def __init__(self, groups):
-        self._groups = groups
-        self._cached_groups = {}
-    
-    def get_group(self, name):
-        if isinstance(self._groups, dict):
-            if name in self._groups:
-                return self._groups[name]
-            print(self._groups)
-            raise ValueError(f"Did not find entry for name '{name}.'")
-            return None
-        if not name in self._cached_groups:
-            self._cached_groups[name] = self._groups.get_group(name)
-        return self._cached_groups[name]
-
 
 
 class LogData:
@@ -181,7 +68,7 @@ class LogData:
         self._forced_fills = fills.loc[(fills.fill_profit_delta < 0) & (fills.fill_ev_eid_delta > 0)]
         if runs_by_date != None:
             if not isinstance(runs_by_date, dict):
-                raise TypeError("'runs_by_date' must be of type pd.DataFrame.");
+                raise TypeError("'runs_by_date' must be of type pd.DataFrame.")
             self.link_runs(runs_by_date)
     
     @property
@@ -311,15 +198,6 @@ def merge_book_stat_sides(book_stats):
     ask_stats = ask_stats.rename(columns=ask_col_map).drop(columns='side')
     return bid_stats.merge(ask_stats, on=['sid', 'eid'])
 
-# If value is iterable, return a set containing
-# all of those values.  Otherwise, return a set
-# with a single element that is the specified value.
-# def normalize_to_set(value):
-#     if isinstance(value, set):
-#         return value
-#     try:
-#         it = iter(value)
-
 
 class SecBookData:
     _books = None
@@ -394,7 +272,6 @@ class BookStatsData:
 
 class SecuritiesData:
     _securities = None
-    # _sym_to_id = {}
     
     def __init__(self, securities):
         if not isinstance(securities, pd.DataFrame):
@@ -403,40 +280,22 @@ class SecuritiesData:
         securities = securities.set_index('sid')
         self._securities = securities
 
-    # def _ensure_sym_to_id(self):
-    #     if len(self._sym_to_id) == 0 and len(self._securities) > 0:
-    #         for sym in self._securities['symbol']:
-    #             sym_id = self._securities.loc[self._securities.symbol == sym].index.values
-    #             if len(sym_id) > 0:
-    #                 self._sym_to_id[sym] = sym_id[0]
-
     @property
     def securities(self):
         return self._securities
 
     def symbol_for_id(self, id):
         return self._securities.at[id, 'symbol']
-        # self._ensure_sym_to_id()
-        # for kv in self._sym_to_id.items():
-        #     if kv[1] == id:
-        #         return kv[0]
-        # return None
 
     def id_for_symbol(self, symbol):
         return self._securities.loc[self._securities.symbol == symbol].index.values[0]
-        # self._ensure_sym_to_id()
-        # if symbol in self._sym_to_id:
-        #     return self._sym_to_id[symbol]
-        # return None
  
 
-def merge_run_with_books(date = '2020-09-10', symbols = ['ESU0'], run_id=2) -> pd.DataFrame:
+def merge_run_with_books(log: LogData, securities: pd.DataFrame, books: pd.DataFrame, date: str, sym: str, run_id: int) -> pd.DataFrame:
     l = log.log_for_date(date).log_for_run(run_id)
-    def add_sid_col(df):
-        df = df.merge(securities['sid'], on='symbol')
-    saved = l.saved_fills.loc[l.saved_fills.symbol.isin(symbols)]
-    clean = l.clean_fills.loc[l.clean_fills.symbol.isin(symbols)]
-    forced = l.forced_fills.loc[l.forced_fills.symbol.isin(symbols)]
+    saved = l.saved_fills.loc[l.saved_fills.symbol == sym]
+    clean = l.clean_fills.loc[l.clean_fills.symbol == sym]
+    forced = l.forced_fills.loc[l.forced_fills.symbol == sym]
     clean['rgtm'] = 1
     saved['rgtm'] = 1
     forced['rgtm'] = -1
@@ -445,7 +304,7 @@ def merge_run_with_books(date = '2020-09-10', symbols = ['ESU0'], run_id=2) -> p
     sample = sample.set_index('ok', drop=False)
     sample.index.name = '_ok'
     sample = sample.sort_values(by='ev_eid1_order')
-    books = book_stats.filter_security([securities.id_for_symbol(s) for s in symbols])
+    books = books.filter_security(securities.id_for_symbol(sym))
     return pd.merge_asof(sample, books, left_on='ev_eid1_order', right_on='eid')
 
 def runs_with_parameters(table: pd.DataFrame, params: dict):
@@ -475,18 +334,6 @@ def demux_run_by_date(run: pd.DataFrame) -> dict:
     for date in run['market_date'].unique():
         run_by_date[date] = run_date_groups.get_group(date)
     return run_by_date
-
-def bbo_cols():
-    return ['bid_q_0', 'bid_p_0', 'ask_p_0', 'ask_q_0']
-    
-def bbo_avg_cols(secs):
-    return [f'{c}_avg_{secs}s' for c in bbo_cols()]
-
-def bbo_var_cols(secs):
-    return [f'{c}_var_{secs}s' for c in bbo_cols()]
-
-def bbo_var_inter_period_delta(secs1, secs2):
-    return [f'{c}_var_{secs1}s_{secs2}s_delta' for c in bbo_cols()]
 
 def add_bbo_cross_delta(data: pd.DataFrame):
     data['bbo_cross_delta'] = data['ask_p_0'] - data['bid_p_0']
